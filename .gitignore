@@ -1,0 +1,6 @@
+# Rust build artifacts
+/target
+
+# Cargo lockfile for a library crate (deps are resolved from Cargo.toml);
+# the example binary regenerates it on first build.
+/Cargo.lock

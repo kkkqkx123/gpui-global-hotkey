@@ -1,0 +1,69 @@
+[package]
+name = "gpui-global-hotkey"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "System-wide global hotkeys for GPUI applications, bridged back to the GPUI main thread"
+repository = "https://github.com/kkkqkx123/gpui-global-hotkey"
+keywords = ["gpui", "global-hotkey", "hotkey", "shortcut", "desktop"]
+categories = ["gui"]
+readme = "README.md"
+
+# This crate is an independent repository, NOT a gpui-kit workspace member (like
+# `gpui-autostart` / `gpui-tray`). It is mounted into gpui-kit through a git
+# submodule and carries its own inner workspace for the example.
+[workspace]
+members = ["examples/hotkey_demo"]
+
+[features]
+default = ["gpui-kit"]
+# Select exactly one GPUI flavor; `lib.rs` rejects any other combination.
+# The selected flavor must match the GPUI the host application builds against,
+# because every operation takes that flavor's `gpui::App`.
+gpui = ["dep:gpui"]
+gpui-kit = ["dep:gpui-kit-backend"]
+gpui-ce = ["dep:gpui-ce-backend"]
+
+[dependencies]
+# Upstream GPUI (Zed). The dependency name *is* `gpui` (its published package is
+# `gpui`), so no `package =` alias is needed here. The git revision is the exact
+# snapshot `gpui-pre 0.3.9` was taken from, so all three flavors share one GPUI
+# API generation.
+gpui = { version = "0.2.2", git = "https://github.com/zed-industries/zed.git", rev = "93d745668805029476e6d7fbb19652116fed51de", default-features = false, optional = true }
+# These packages also name their Rust library `gpui`, so use explicit aliases.
+# Pin the exact snapshot gpui-kit 0.8.0 locks: a caret requirement would drift
+# applications onto a snapshot their `gpui::App` was not compiled against.
+gpui-kit-backend = { package = "gpui-pre", version = "=0.3.9", default-features = false, optional = true }
+gpui-ce-backend = { package = "gpui-ce", version = "0.3.0", default-features = false, optional = true }
+
+anyhow = "1"
+log = "0.4"
+flume = "0.11"
+parking_lot = "0.12"
+
+# Route A: wrap the cross-platform `global-hotkey` crate as the OS-level backend.
+# It ships Windows / macOS / Linux(X11) support plus a no-op fallback, so this
+# crate builds and runs on every target (degrading to `is_available() == false`
+# where the platform is unsupported).
+global-hotkey = "0.9"
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+almost_complete_range = "allow"
+arc_with_non_send_sync = "allow"
+borrowed_box = "allow"
+dbg_macro = "deny"
+let_underscore_future = "allow"
+manual_is_multiple_of = "allow"
+map_entry = "allow"
+module_inception = "allow"
+non_canonical_partial_ord_impl = "allow"
+reversed_empty_ranges = "allow"
+single_range_in_vec_init = "allow"
+style = { level = "allow", priority = -1 }
+todo = "deny"
+type_complexity = "allow"
+useless_conversion = "allow"

@@ -12,6 +12,16 @@
 //! + `App::dispatch_action`). The native platform threads only ever `send` events;
 //! all GPUI state access happens on the main thread.
 //!
+//! ## Process-wide singleton
+//!
+//! The OS-level event handler in `global-hotkey` (`GlobalHotKeyEvent::
+//! set_event_handler`) is a process-global `OnceCell`: it can be installed exactly
+//! once per process, and a second installation is silently ignored. To avoid the
+//! silent event loss that a naive per-instance design would suffer, this crate
+//! backs *every* [`GlobalHotkey`] handle with a single process-wide
+//! [`GlobalHotkeyService`] (created on the first `new` call and shared by all
+//! handles). The service is accordingly resident for the lifetime of the process.
+//!
 //! ## GPUI flavors
 //!
 //! Select exactly one flavor: `gpui-kit` (default, GPUI Kit's `gpui-pre` types),
@@ -19,6 +29,15 @@
 //! default features when selecting an alternative. The selected flavor must match
 //! the GPUI the host application builds against, because every operation takes
 //! that flavor's `gpui::App`.
+//!
+//! ## Availability & platform notes
+//!
+//! `is_available()` reports whether a working backend exists on the current
+//! platform / session. On Linux it probes X11 connectivity up front, so a pure
+//! Wayland session (no XWayland) reports `false` and every registration call
+//! fails with an error instead of hanging. When `is_available()` is `false`,
+//! [`GlobalHotkey::new`] still succeeds (the app starts normally) but
+//! `on_hotkey` / `register` return an error.
 //!
 //! ## Example
 //!
@@ -87,7 +106,7 @@ pub use platform::{GlobalHotkeyBackend, PlatformHotkeyBackend};
 pub use global_hotkey::hotkey::{Code, Modifiers};
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use flume::Sender;
@@ -120,44 +139,42 @@ enum BridgeMsg {
     Event(GlobalHotKeyEvent),
     /// Unregister the hotkey with this id (the OS call runs on the main thread).
     Unregister(u32),
-    /// Tear down the bridge; the manager's `Drop` then releases every grab.
-    Shutdown,
 }
 
-/// Shared state behind an [`GlobalHotkey`] handle.
-struct Inner {
-    backend: PlatformHotkeyBackend,
-    registry: Arc<Mutex<HashMap<u32, Registration>>>,
-    ctrl_tx: Sender<BridgeMsg>,
-}
-
-/// A handle to the system global-hotkey service.
+/// The process-wide service backing every [`GlobalHotkey`] handle.
 ///
-/// Cheaply cloneable (`Arc`), and bound to the GPUI main thread like every other
-/// handle into application state: create it inside `application().run(|cx| …)` and
-/// call its methods there. Registering a shortcut returns a
-/// [`HotkeyRegistration`] whose lifetime is the registration — drop it to
-/// unregister.
-pub struct GlobalHotkey {
-    inner: Arc<Inner>,
+/// Because `global-hotkey`'s OS event handler is a process-global `OnceCell`
+/// (see [`GlobalHotKeyEvent::set_event_handler`]), this service is created at
+/// most once per process via [`GlobalHotkeyService::get_or_init`]. All handles
+/// share its manager, registry, and bridge task. The service is intentionally
+/// resident for the process lifetime: the upstream handler cannot be reset, so a
+/// torn-down service cannot be re-created within the same process (tauri's
+/// `global-shortcut` plugin is likewise process-resident).
+struct GlobalHotkeyService {
+    /// The OS backend; `is_available()` reflects whether registration will work.
+    backend: GlobalHotkeyBackend,
+    /// Shared registry of all currently-registered hotkeys (across *every*
+    /// [`GlobalHotkey`] handle in the process).
+    registry: Arc<Mutex<HashMap<u32, Registration>>>,
+    /// The sender side of the bridge channel; cloned into every registration so
+    /// its `Drop` can request unregistration.
+    bridge_tx: Sender<BridgeMsg>,
 }
 
-impl Clone for GlobalHotkey {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl GlobalHotkey {
-    /// Create the global-hotkey service on the current platform.
+impl GlobalHotkeyService {
+    /// Return the process-wide service, creating it on first call.
     ///
-    /// Never blocks startup: if the OS cannot provide global hotkeys (e.g. a
-    /// Wayland session without XWayland, or an unsupported platform), the handle
-    /// is still returned with [`GlobalHotkey::is_available`] reporting `false`
-    /// and every registration degrading to a silent no-op.
-    pub fn new(cx: &mut App) -> Result<Self> {
+    /// `cx` is required only for the very first call (to spawn the bridge task
+    /// on the GPUI main thread); subsequent calls ignore it and return the
+    /// already-created shared service.
+    fn get_or_init(cx: &mut App) -> Arc<Self> {
+        static SERVICE: OnceLock<Arc<GlobalHotkeyService>> = OnceLock::new();
+        SERVICE
+            .get_or_init(|| Arc::new(GlobalHotkeyService::new(cx)))
+            .clone()
+    }
+
+    fn new(cx: &mut App) -> Self {
         let supported = cfg!(any(
             target_os = "windows",
             target_os = "macos",
@@ -168,25 +185,22 @@ impl GlobalHotkey {
             target_os = "netbsd",
         ));
 
-        let manager: Option<Arc<Mutex<backend::Manager>>> = if supported {
-            match GlobalHotKeyManager::new() {
-                Ok(m) => Some(Arc::new(Mutex::new(backend::Manager { inner: Some(m) }))),
-                Err(e) => {
-                    log::warn!("global-hotkey manager unavailable: {e}");
-                    None
-                }
-            }
+        // Determine (manager, available). On Linux we probe X11 connectivity
+        // *before* constructing the manager so a pure-Wayland session (no
+        // XWayland) reports `available == false` instead of blocking later in
+        // `register` (the upstream x11 thread would never reply).
+        let (manager, available) = if supported {
+            create_backend()
         } else {
-            None
+            (None, false)
         };
-        let available = manager.is_some();
 
         let (bridge_tx, bridge_rx) = flume::unbounded::<BridgeMsg>();
         let registry = Arc::new(Mutex::new(HashMap::new()));
 
-        // Forward OS events into our bridge channel. The global-hotkey handler is a
-        // process-global, `Send + Sync` hook, so exactly one `GlobalHotkey` should
-        // exist per process (subsequent instances cannot replace it).
+        // Install the OS event handler exactly once. `OnceLock` guarantees this
+        // closure is created only on the first `new` call; the upstream
+        // `OnceCell` would silently ignore any later attempt anyway.
         if available {
             let event_tx = bridge_tx.clone();
             GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
@@ -194,12 +208,15 @@ impl GlobalHotkey {
             }));
         }
 
-        // Bridge task: runs on the GPUI main thread (the executor polls it there).
-        // It owns the manager so the OS grabs are released only when the task ends.
+        // Bridge task: runs on the GPUI main thread (the executor polls it
+        // there). The returned `Task` handle is intentionally dropped — dropping
+        // it does not cancel the spawned future, so the loop runs for the
+        // process lifetime. It owns the manager so OS grabs are released only at
+        // process exit.
         let app = cx.to_async();
         let registry_bridge = registry.clone();
         let manager_bridge = manager.clone();
-        let _task = cx.spawn(move |_cx: &mut AsyncApp| {
+        let _bridge_task = cx.spawn(move |_cx: &mut AsyncApp| {
             let app = app.clone();
             async move {
                 while let Ok(msg) = bridge_rx.recv() {
@@ -215,25 +232,97 @@ impl GlobalHotkey {
                                 registry_bridge.lock().remove(&id);
                             }
                         }
-                        BridgeMsg::Shutdown => break,
                     }
                 }
             }
         });
 
         let backend = GlobalHotkeyBackend::new(manager, available);
+        Self {
+            backend,
+            registry,
+            bridge_tx,
+        }
+    }
+}
+
+/// Build the OS backend (manager + availability flag) for a supported platform.
+///
+/// On Linux this probes X11 first; on other platforms `GlobalHotKeyManager::new`
+/// itself reports failure (so a `None` manager with `available == false` is
+/// returned). Unsupported platforms never reach here.
+fn create_backend() -> (Option<Arc<Mutex<backend::Manager>>>, bool) {
+    #[cfg(target_os = "linux")]
+    {
+        if crate::backend::x11_available() {
+            make_manager()
+        } else {
+            (None, false)
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        make_manager()
+    }
+}
+
+/// Try to construct the `global-hotkey` manager; on failure report unavailable.
+fn make_manager() -> (Option<Arc<Mutex<backend::Manager>>>, bool) {
+    match GlobalHotKeyManager::new() {
+        Ok(m) => (
+            Some(Arc::new(Mutex::new(backend::Manager { inner: Some(m) }))),
+            true,
+        ),
+        Err(e) => {
+            log::warn!("global-hotkey manager unavailable: {e}");
+            (None, false)
+        }
+    }
+}
+
+/// A handle to the system global-hotkey service.
+///
+/// Cheaply cloneable (`Arc`): every handle in the process shares the same
+/// underlying [`GlobalHotkeyService`] (one manager, one registry, one bridge
+/// task). Create it inside `application().run(|cx| …)` and call its methods
+/// there. Registering a shortcut returns a [`HotkeyRegistration`] whose lifetime
+/// is the registration — drop it to unregister.
+pub struct GlobalHotkey {
+    service: Arc<GlobalHotkeyService>,
+}
+
+impl Clone for GlobalHotkey {
+    fn clone(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+        }
+    }
+}
+
+impl GlobalHotkey {
+    /// Obtain a handle to the process-wide global-hotkey service.
+    ///
+    /// The first call in the process creates the service (installing the OS event
+    /// handler and spawning the bridge task on the GPUI main thread); later calls
+    /// return a shared handle. Never blocks startup: if the OS cannot provide
+    /// global hotkeys (e.g. a Wayland session without XWayland, or an
+    /// unsupported platform), the handle is still returned with
+    /// [`GlobalHotkey::is_available`] reporting `false`, and every registration
+    /// call returns an error instead of hanging.
+    pub fn new(cx: &mut App) -> Result<Self> {
         Ok(Self {
-            inner: Arc::new(Inner {
-                backend,
-                registry,
-                ctrl_tx: bridge_tx,
-            }),
+            service: GlobalHotkeyService::get_or_init(cx),
         })
     }
 
     /// Whether a working global-hotkey backend exists on this platform / session.
+    ///
+    /// On Linux this reflects X11 connectivity (a pure Wayland session returns
+    /// `false`); on Windows / macOS it reflects whether the manager could be
+    /// created. When `false`, [`on_hotkey`](Self::on_hotkey) / `register`
+    /// return an error.
     pub fn is_available(&self) -> bool {
-        self.inner.backend.is_available()
+        self.service.backend.is_available()
     }
 
     /// Register a global hotkey that dispatches a GPUI [`Action`](gpui::Action).
@@ -272,10 +361,20 @@ impl GlobalHotkey {
         action: Option<AnyAction>,
         handler: Option<Box<dyn FnMut(&mut App, HotkeyEvent) + Send + 'static>>,
     ) -> Result<HotkeyRegistration> {
+        // Fast-fail before doing any work: if the backend cannot register (e.g.
+        // a Wayland session with no X11), report it as an error rather than
+        // letting the underlying `register` block on a dead thread.
+        if !self.service.backend.is_available() {
+            anyhow::bail!(
+                "global-hotkey backend unavailable on this platform/session \
+                 (no X11/Wayland backend, or the OS rejected the manager)"
+            );
+        }
+
         let ghk = public.to_global_hotkey()?;
-        self.inner.backend.register_global(ghk)?;
+        self.service.backend.register_global(ghk)?;
         let id = ghk.id();
-        self.inner.registry.lock().insert(
+        self.service.registry.lock().insert(
             id,
             Registration {
                 ghk,
@@ -286,32 +385,34 @@ impl GlobalHotkey {
         );
         Ok(HotkeyRegistration {
             id,
-            ctrl_tx: self.inner.ctrl_tx.clone(),
+            ctrl_tx: self.service.bridge_tx.clone(),
         })
     }
 
     /// Unregister every hotkey registered through this handle.
     pub fn clear(&self) {
         let ghks: Vec<global_hotkey::hotkey::HotKey> = self
-            .inner
+            .service
             .registry
             .lock()
             .values()
             .map(|r| r.ghk)
             .collect();
         for ghk in ghks {
-            let _ = self.inner.backend.unregister_global(ghk);
+            let _ = self.service.backend.unregister_global(ghk);
         }
-        self.inner.registry.lock().clear();
-        let _ = self.inner.backend.clear();
+        self.service.registry.lock().clear();
+        let _ = self.service.backend.clear();
     }
 }
 
 impl Drop for GlobalHotkey {
     fn drop(&mut self) {
-        // Tell the bridge to stop; when it ends, the manager `Arc` it holds drops
-        // and the OS releases every grab.
-        let _ = self.inner.ctrl_tx.send(BridgeMsg::Shutdown);
+        // The service is process-resident: dropping a handle does not tear it
+        // down (other handles may still depend on it, and the upstream event
+        // handler cannot be reset). Registrations are owned by
+        // [`HotkeyRegistration`], whose `Drop` still unregisters them
+        // individually.
     }
 }
 

@@ -47,6 +47,14 @@ parking_lot = "0.12"
 # where the platform is unsupported).
 global-hotkey = "0.9"
 
+# Linux availability probe. Must match the `x11rb` version `global-hotkey` locks
+# (currently 0.13.1) so only a single copy exists in the dependency tree. Used by
+# `backend::x11_available()` to detect a real X11 server (a pure-Wayland session
+# has none) before constructing the manager, so registration fails cleanly
+# instead of blocking on the backend's event thread.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13.1"
+
 [lints.rust]
 missing_docs = "warn"
 unsafe_op_in_unsafe_fn = "deny"

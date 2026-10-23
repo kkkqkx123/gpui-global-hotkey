@@ -25,7 +25,7 @@
 `flume` 桥接中，与 `gpui-tray` 完全一致。OS 抓键由跨平台
 [`global-hotkey`](https://github.com/tauri-apps/global-hotkey) crate 完成，因此本 crate 开箱即支持
 Windows / macOS / Linux(X11)（并带 no-op 兜底：当平台无法提供全局快捷键时 `is_available()` 为
-`false`，注册退化为空操作，应用照常启动）。
+`false`，注册会返回错误而非挂起，应用照常启动）。
 
 ## GPUI flavor 选择
 
@@ -68,11 +68,13 @@ fn main() {
 
 ## 平台说明
 
-- **Linux**：仅 X11。无 XWayland 的 Wayland 会话下 `is_available()` 为 `false`，请回退为窗口内快捷键。
-  X11 仅产生 `Pressed`。
+- **Linux**：仅 X11。无 XWayland 的纯 Wayland 会话会在初始化时通过 X11 连通性探测识别，
+  `is_available()` 为 `false`，注册直接返回错误（绝不会阻塞在后台已死的线程上）。X11 **同时**产生
+  `Pressed` 与 `Released`。
 - **macOS**：Carbon `RegisterEventHotKey` —— 无需辅助功能权限。
 - **Windows**：在主线程消息循环上 `RegisterHotKey`。
-- 每个进程预期只创建一个 `GlobalHotkey` 实例（底层事件处理器为进程级全局）。
+- 进程内所有 `GlobalHotkey` 句柄**共享同一个**进程级服务（管理器 + 注册表 + 桥接任务）。该服务在首次
+  `new` 时创建，并随进程生命周期常驻——因为底层事件处理器是进程级 `OnceCell`，无法被重置。
 
 ## 许可证
 

@@ -9,6 +9,17 @@ use parking_lot::Mutex;
 
 use crate::hotkey::HotKey;
 
+/// Probe whether an X11 server is reachable (a pure-Wayland session has none).
+///
+/// Mirrors the connectivity check the `global-hotkey` x11 backend performs in
+/// its event thread, done up front so we can short-circuit registration instead
+/// of blocking on a dead thread. Only meaningful on Linux; on other platforms the
+/// manager's own `new()` reports failure directly.
+#[cfg(target_os = "linux")]
+pub(crate) fn x11_available() -> bool {
+    x11rb::connect(None).is_ok()
+}
+
 /// A platform global-hotkey implementation.
 ///
 /// Backends own native handles that belong to the GPUI main thread, so a backend
@@ -18,7 +29,8 @@ pub trait HotkeyBackend {
     /// Whether a working global-hotkey backend is present on this platform /
     /// session. Returns `false` when the OS cannot provide global hotkeys (e.g.
     /// a Wayland session with no XWayland, or an unsupported platform), so the
-    /// application can start normally and the registration calls become no-ops.
+    /// application can start normally and the registration calls return an
+    /// error instead of hanging.
     fn is_available(&self) -> bool;
 
     /// Register a hotkey with the OS. Returns an error if the OS rejects it
@@ -79,8 +91,9 @@ unsafe impl Sync for Manager {}
 /// The concrete backend wrapping the cross-platform `global-hotkey` crate.
 ///
 /// When the manager could not be created (or the target is unsupported) it holds
-/// `None` and reports `is_available() == false`; registration then degrades to a
-/// silent no-op so the application still starts.
+/// `None` and reports `is_available() == false`; registration then returns an
+/// error (rather than silently succeeding) so the application still starts and
+/// can react to the failure.
 pub struct GlobalHotkeyBackend {
     manager: Option<Arc<Mutex<Manager>>>,
     available: bool,
@@ -92,11 +105,18 @@ impl GlobalHotkeyBackend {
     }
 
     /// Register a `global-hotkey` `HotKey` directly (no string round-trip).
+    ///
+    /// Returns an error when no backend is available (e.g. a Wayland session with
+    /// no X11), so callers get a clear failure instead of a silent no-op — and
+    /// never block on the underlying x11 thread, which would hang the caller.
     pub(crate) fn register_global(&self, ghk: global_hotkey::hotkey::HotKey) -> Result<()> {
-        if let Some(m) = &self.manager {
-            m.lock().register(ghk)?;
+        match &self.manager {
+            Some(m) => m.lock().register(ghk),
+            None => anyhow::bail!(
+                "global-hotkey backend unavailable on this platform/session \
+                 (no X11/Wayland backend)"
+            ),
         }
-        Ok(())
     }
 
     /// Unregister a `global-hotkey` `HotKey` directly.

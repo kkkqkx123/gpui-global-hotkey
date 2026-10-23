@@ -30,7 +30,8 @@ exactly like `gpui-tray`. The OS grabs are performed by the cross-platform
 [`global-hotkey`](https://github.com/tauri-apps/global-hotkey) crate, so this
 crate ships Windows / macOS / Linux(X11) support out of the box (plus a no-op
 fallback: when the platform cannot provide hotkeys, `is_available()` is `false`
-and registration degrades to a no-op so your app still starts).
+and every registration call returns an error instead of hanging, so your app
+still starts).
 
 ## GPUI flavors
 
@@ -74,13 +75,16 @@ one from flags: `hotkey!(control | alt => "g")`.
 
 ## Platform notes
 
-- **Linux**: X11 only. A Wayland session without XWayland reports
-  `is_available() == false`; fall back to in-window keybindings. X11 only emits
-  `Pressed`.
+- **Linux**: X11 only. A Wayland session without XWayland is detected up front
+  via an X11 connectivity probe, so `is_available() == false` and registration
+  fails with an error (it never blocks on a dead backend thread). X11 delivers
+  **both** `Pressed` and `Released`.
 - **macOS**: Carbon `RegisterEventHotKey` — no Accessibility permission needed.
 - **Windows**: `RegisterHotKey` on the main thread's message loop.
-- A single `GlobalHotkey` instance per process is expected (the underlying
-  event handler is process-global).
+- Every `GlobalHotkey` handle in a process shares **one** process-wide service
+  (manager + registry + bridge task). The service is created on the first `new`
+  call and is resident for the process lifetime, because the underlying event
+  handler is a process-global `OnceCell` that cannot be reset.
 
 ## License
 

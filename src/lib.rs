@@ -66,30 +66,19 @@
 //! }
 //! ```
 
-#[cfg(all(feature = "gpui", feature = "gpui-kit"))]
+#[cfg(all(feature = "gpui-kit", feature = "gpui-fast"))]
 compile_error!(
-    "features `gpui` and `gpui-kit` are mutually exclusive; use default-features = false and select exactly one backend"
+    "features `gpui-kit` and `gpui-fast` are mutually exclusive; use default-features = false and select exactly one backend"
 );
-#[cfg(all(feature = "gpui", feature = "gpui-ce"))]
-compile_error!(
-    "features `gpui` and `gpui-ce` are mutually exclusive; use default-features = false and select exactly one backend"
-);
-#[cfg(all(feature = "gpui-kit", feature = "gpui-ce"))]
-compile_error!(
-    "features `gpui-kit` and `gpui-ce` are mutually exclusive; use default-features = false and select exactly one backend"
-);
-#[cfg(not(any(feature = "gpui", feature = "gpui-kit", feature = "gpui-ce")))]
-compile_error!("enable exactly one of the `gpui`, `gpui-kit`, or `gpui-ce` features");
+#[cfg(not(any(feature = "gpui-kit", feature = "gpui-fast")))]
+compile_error!("enable exactly one of the `gpui-kit` or `gpui-fast` features");
 
 // Every flavor publishes the same `gpui` API under a renamed dependency, so the
 // selected one is aliased to `gpui` here.
-#[cfg(all(feature = "gpui-ce", not(any(feature = "gpui", feature = "gpui-kit"))))]
-extern crate gpui_ce_backend as gpui;
-#[cfg(all(feature = "gpui-kit", not(any(feature = "gpui", feature = "gpui-ce"))))]
+#[cfg(all(feature = "gpui-kit", not(feature = "gpui-fast")))]
 extern crate gpui_kit_backend as gpui;
-// The upstream flavor's dependency *is* named `gpui`, so no alias is needed.
-#[cfg(all(feature = "gpui", not(any(feature = "gpui-kit", feature = "gpui-ce"))))]
-extern crate gpui;
+#[cfg(all(feature = "gpui-fast", not(feature = "gpui-kit")))]
+extern crate gpui_fast_backend as gpui;
 
 mod backend;
 mod event;

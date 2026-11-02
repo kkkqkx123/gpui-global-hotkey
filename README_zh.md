@@ -33,7 +33,7 @@ Windows / macOS / Linux(X11)（并带 no-op 兜底：当平台无法提供全局
 
 | feature     | GPUI 来源                        |
 | ----------- | --------------------------------- |
-| `gpui-kit`  | `gpui-pre` 0.3.9（GPUI Kit）— 默认 |
+| `gpui-kit`  | `gpui-pre`（GPUI Kit）— 默认 |
 | `gpui`      | 上游 Zed GPUI（git rev）          |
 | `gpui-ce`   | GPUI Community Edition 0.3.0      |
 

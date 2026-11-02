@@ -39,7 +39,7 @@ Select exactly one flavor (disable default features to pick another):
 
 | feature     | GPUI source                       |
 | ----------- | --------------------------------- |
-| `gpui-kit`  | `gpui-pre` 0.3.9 (GPUI Kit) — default |
+| `gpui-kit`  | `gpui-pre` (GPUI Kit) — default |
 | `gpui`      | upstream Zed GPUI (git rev)       |
 | `gpui-ce`   | GPUI Community Edition 0.3.0      |
 

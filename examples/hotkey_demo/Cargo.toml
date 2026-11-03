@@ -16,3 +16,6 @@ gpui-global-hotkey = { path = "../..", default-features = false }
 default = ["gpui-kit"]
 # GPUI Kit's `gpui-pre` snapshot, the default backend.
 gpui-kit = ["gpui-global-hotkey/gpui-kit"]
+# GPUI Fast. It replaces the default backend, so it replaces the flavor
+# feature too: build it with `--no-default-features --features gpui-fast`.
+gpui-fast = ["gpui-global-hotkey/gpui-fast", "gpui-kit/gpui-fast"]

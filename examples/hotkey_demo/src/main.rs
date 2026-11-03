@@ -1,6 +1,6 @@
 //! Global-hotkey demo: register a system-wide shortcut (`Ctrl+Alt+G`) that shows
 //! and focuses the main window even when the app is in the background. Run with
-//! `cargo run --example hotkey_demo` on a desktop session (X11 on Linux, the
+//! `cargo run -p hotkey_demo` on a desktop session (X11 on Linux, the
 //! menu bar on macOS, the taskbar on Windows).
 //!
 //! Background test: launch the demo, click away to another app, then press the

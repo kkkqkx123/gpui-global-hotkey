@@ -13,7 +13,7 @@ readme = "README.md"
 # `gpui-autostart` / `gpui-tray`). It is mounted into gpui-kit through a git
 # submodule and carries its own inner workspace for the example.
 [workspace]
-members = ["examples/hotkey_demo"]
+members = ["examples/hotkey_demo", "examples/hotkey_probe"]
 
 [features]
 default = ["gpui-kit"]

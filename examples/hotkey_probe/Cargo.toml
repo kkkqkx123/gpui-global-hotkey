@@ -1,0 +1,20 @@
+[package]
+name = "hotkey_probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Windowless verification probe for gpui-global-hotkey: register / unregister / conflict / availability, with exit codes for scripted checks"
+
+[dependencies]
+# The published GPUI Kit release supplies the application shell and the GPUI
+# types. The global-hotkey crate must be built against the same GPUI, so the
+# flavor features below select one GPUI for both.
+gpui-kit = { version = "0.8", default-features = false }
+gpui-global-hotkey = { path = "../..", default-features = false }
+
+[features]
+default = ["gpui-kit"]
+# GPUI Kit's `gpui-pre` snapshot, the default backend.
+gpui-kit = ["gpui-global-hotkey/gpui-kit"]
+# GPUI Fast backend; select with --no-default-features --features gpui-fast.
+gpui-fast = ["gpui-global-hotkey/gpui-fast"]
